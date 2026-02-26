@@ -1,90 +1,152 @@
-#include <iostream> 
- #include <sstream> 
- #include <unordered_map> 
- #include <vector> 
- #include <thread> 
- #include <mutex> 
-  
- using namespace std; 
-  
- unordered_map<string, int> symTable; 
- mutex tableMutex; 
-  
- int getValue(const string& token) { 
-     if (isdigit(token[0])) 
-         return stoi(token); 
-  
-     lock_guard<mutex> lock(tableMutex); 
-     return symTable[token]; 
- } 
-  
- void executeStatement(string stmt) { 
-  
-     stringstream ss(stmt); 
-     string token; 
-  
-     ss >> token; 
-  
-     // int x = 10; 
-     if (token == "int") { 
-         string name, eq, value; 
-         ss >> name >> eq >> value; 
-  
-         int val = stoi(value); 
-  
-         lock_guard<mutex> lock(tableMutex); 
-         symTable[name] = val; 
-     } 
-     // x = x + y; 
-     else { 
-         string name = token; 
-         string eq, v1, op, v2; 
-  
-         ss >> eq >> v1 >> op >> v2; 
-  
-         int result = getValue(v1); 
-  
-         if (op == "+") 
-             result += getValue(v2); 
-  
-         lock_guard<mutex> lock(tableMutex); 
-         symTable[name] = result; 
-     } 
- } 
-  
- int main() { 
-  
-     string code = 
-         "int x = 10;" 
-         "int y = 5;" 
-         "x = x + y;" 
-         "y = x + 20;"; 
-  
-     // Split by ';' 
-     vector<string> statements; 
-     string temp; 
-  
-     for (char c : code) { 
-         if (c == ';') { 
-             statements.push_back(temp); 
-             temp.clear(); 
-         } else { 
-             temp += c; 
-         } 
-     } 
-  
-     vector<thread> threads; 
-  
-     for (auto& stmt : statements) { 
-         threads.emplace_back(executeStatement, stmt); 
-     } 
-  
-     for (auto& t : threads) 
-         t.join(); 
-  
-     cout << "Symbol Table:\n"; 
-     for (auto& p : symTable) 
-         cout << p.first << " = " << p.second << endl; 
-  
-     return 0; 
- }
+#include <iostream>
+#include <sstream>
+#include <unordered_map>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <set>
+
+using namespace std;
+
+unordered_map<string, int> symTable;
+mutex tableMutex;
+
+// ---------------- Utility ----------------
+int getValue(const string& token) {
+    if (isdigit(token[0]))
+        return stoi(token);
+
+    lock_guard<mutex> lock(tableMutex);
+    return symTable[token];
+}
+
+// ---------------- Statement Struct ----------------
+struct Statement {
+    string raw;
+    string lhs;
+    vector<string> dependencies;
+};
+
+// ---------------- Parse Statement ----------------
+Statement parseStatement(string stmt) {
+    stringstream ss(stmt);
+    string token;
+    Statement s;
+    s.raw = stmt;
+
+    ss >> token;
+
+    if (token == "int") {
+        string name, eq, value;
+        ss >> name >> eq >> value;
+        s.lhs = name;
+    }
+    else {
+        s.lhs = token;
+        string eq, v1, op, v2;
+        ss >> eq >> v1 >> op >> v2;
+
+        if (!isdigit(v1[0]))
+            s.dependencies.push_back(v1);
+        if (!isdigit(v2[0]))
+            s.dependencies.push_back(v2);
+    }
+
+    return s;
+}
+
+// ---------------- Execute ----------------
+void executeStatement(const Statement& s) {
+    stringstream ss(s.raw);
+    string token;
+    ss >> token;
+
+    if (token == "int") {
+        string name, eq, value;
+        ss >> name >> eq >> value;
+
+        lock_guard<mutex> lock(tableMutex);
+        symTable[name] = stoi(value);
+    }
+    else {
+        string name = token;
+        string eq, v1, op, v2;
+
+        ss >> eq >> v1 >> op >> v2;
+
+        int result = getValue(v1);
+
+        if (op == "+")
+            result += getValue(v2);
+
+        lock_guard<mutex> lock(tableMutex);
+        symTable[name] = result;
+    }
+}
+
+// ---------------- Main ----------------
+int main() {
+
+    string code =
+        "int x = 10;"
+        "int y = 5;"
+        "x = x + y;"
+        "y = x + 20;";
+
+    vector<string> rawStatements;
+    string temp;
+
+    // Split
+    for (char c : code) {
+        if (c == ';') {
+            rawStatements.push_back(temp);
+            temp.clear();
+        } else {
+            temp += c;
+        }
+    }
+
+    vector<Statement> statements;
+
+    for (auto& r : rawStatements)
+        statements.push_back(parseStatement(r));
+
+    set<string> completed;
+
+    while (!statements.empty()) {
+
+        vector<thread> batch;
+        vector<int> executedIndices;
+
+        for (int i = 0; i < statements.size(); i++) {
+
+            bool ready = true;
+
+            for (auto& dep : statements[i].dependencies) {
+                if (completed.find(dep) == completed.end()) {
+                    ready = false;
+                    break;
+                }
+            }
+
+            if (ready) {
+                batch.emplace_back(executeStatement, statements[i]);
+                executedIndices.push_back(i);
+                completed.insert(statements[i].lhs);
+            }
+        }
+
+        for (auto& t : batch)
+            t.join();
+
+        // Remove executed
+        for (int i = executedIndices.size() - 1; i >= 0; i--)
+            statements.erase(statements.begin() + executedIndices[i]);
+    }
+
+    cout << "Final Symbol Table:\n";
+    for (auto& p : symTable)
+        cout << p.first << " = " << p.second << endl;
+
+    return 0;
+}
